@@ -1,0 +1,62 @@
+---
+# The ssm_parameter module on a real remote host. node1, a python:3.13-slim
+# container reached over the community.docker.docker connection, runs it
+# against moto, a second container standing in for SSM and STS on a shared
+# Docker network. The module_ssm_parameter integration target runs the same
+# module through the local connection; here Ansible ships it to another host,
+# module_utils included, and boto3 exists only on that host.
+#
+# Run it from tests/integration: `molecule test -s ssm_parameter` (AGENTS.md).
+# The platforms come from the molecule-git-cgallagher driver's docker kind.
+driver:
+  name: molecule-git-cgallagher
+  options:
+    # Both platforms join one network, created by the first and removed with
+    # the last; node1 reaches moto by its container name.
+    platform_defaults:
+      docker_networks:
+        - name: aws-molecule
+      networks:
+        - name: aws-molecule
+platforms:
+  # The image's entrypoint is the server (moto_server -H 0.0.0.0, port 5000),
+  # so keep it: the kind's default command would be passed to it as arguments.
+  - name: moto
+    image: docker.io/motoserver/moto:5.2.5
+    override_command: false
+    groups: [services]
+  - name: node1
+    image: docker.io/library/python:3.13-slim
+    groups: [nodes]
+provisioner:
+  name: ansible
+  env:
+    # .github/ci/runtime.sh links this checkout in as git_cgallagher.aws under
+    # collections/ (gitignored, and in galaxy.yml's build_ignore).
+    ANSIBLE_COLLECTIONS_PATH: ${MOLECULE_PROJECT_DIRECTORY}/../../collections:~/.ansible/collections
+  inventory:
+    group_vars:
+      nodes:
+        # The same accounts and roles as the module_ssm_parameter integration
+        # target. moto gives an assumed role's credentials the role's account
+        # and doesn't check trust policies, so the roles needn't exist.
+        aws_target_account: '222222222222'
+        aws_hub_arn: arn:aws:iam::111111111111:role/Hub
+        aws_endpoints:
+          region: us-east-1
+          endpoint_url: http://moto:5000
+          sts_endpoint_url: http://moto:5000
+          # moto's documented fake credentials; it accepts any.
+          access_key: testing
+          secret_key: testing
+        aws_cross: "{{ aws_endpoints | combine({'account': aws_target_account, 'role_name': 'ParamWriter'}) }}"
+        aws_chained: "{{ aws_cross | combine({'via_role_arns': [aws_hub_arn]}) }}"
+        aws_param_name: /app/prod/db/password
+        # A throwaway value in a throwaway moto; checked never to come back in a result.
+        aws_param_value: Example-not-secret-1
+verifier:
+  name: ansible
+scenario:
+  name: ssm_parameter
+  # No dependency step: everything the controller needs is in the runtime image.
+  test_sequence: [destroy, syntax, create, prepare, converge, idempotence, verify, destroy]

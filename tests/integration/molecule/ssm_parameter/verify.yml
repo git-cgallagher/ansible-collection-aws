@@ -1,0 +1,75 @@
+---
+# Each check asks the module, in check mode, whether it would change the stored
+# parameter: nothing is written and no value comes back, so the module's own
+# comparison against what SSM holds is the read.
+- name: Read the parameter back through the role chain, from node1
+  hosts: nodes
+  gather_facts: false
+  module_defaults:
+    git_cgallagher.aws.ssm_parameter: "{{ aws_chained }}"
+  tasks:
+    - name: Ask about the same value
+      git_cgallagher.aws.ssm_parameter:
+        name: "{{ aws_param_name }}"
+        value: "{{ aws_param_value }}"
+        string_type: SecureString
+        description: Database password
+        tags:
+          Owner: molecule
+      check_mode: true
+      register: aws_same
+
+    - name: Ask about a different value
+      git_cgallagher.aws.ssm_parameter:
+        name: "{{ aws_param_name }}"
+        value: Example-not-secret-2
+        string_type: SecureString
+        description: Database password
+        tags:
+          Owner: molecule
+      check_mode: true
+      register: aws_other
+
+    - name: Ask about removing it
+      git_cgallagher.aws.ssm_parameter:
+        name: "{{ aws_param_name }}"
+        state: absent
+      check_mode: true
+      register: aws_absent
+
+    - name: Check what the target account holds
+      ansible.builtin.assert:
+        that:
+          - aws_same is not changed
+          - aws_other is changed
+          - aws_absent is changed
+          - aws_param_value not in ([aws_same, aws_other, aws_absent] | to_json)
+        fail_msg: >-
+          Same value changed: {{ aws_same is changed }}; other value changed:
+          {{ aws_other is changed }}; absent changed: {{ aws_absent is changed }}
+
+# Without a role the module works in moto's default account, where the
+# parameter doesn't exist: it really landed in the target account.
+- name: Look for the parameter with the base credentials, from node1
+  hosts: nodes
+  gather_facts: false
+  module_defaults:
+    git_cgallagher.aws.ssm_parameter: "{{ aws_endpoints }}"
+  tasks:
+    - name: Ask about the same value without a role
+      git_cgallagher.aws.ssm_parameter:
+        name: "{{ aws_param_name }}"
+        value: "{{ aws_param_value }}"
+        string_type: SecureString
+        description: Database password
+        tags:
+          Owner: molecule
+      check_mode: true
+      register: aws_base
+
+    - name: Check the base account doesn't have it
+      ansible.builtin.assert:
+        that:
+          - aws_base is changed
+          - aws_param_value not in (aws_base | to_json)
+        fail_msg: The base credentials can see the parameter, so it isn't in the target account.

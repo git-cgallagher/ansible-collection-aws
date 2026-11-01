@@ -1,0 +1,28 @@
+---
+# Molecule runs this twice: the second run (idempotence) must change nothing.
+- name: Write a parameter into the target account through a role chain, from node1
+  hosts: nodes
+  gather_facts: false
+  module_defaults:
+    git_cgallagher.aws.ssm_parameter: "{{ aws_chained }}"
+  tasks:
+    - name: Create the SecureString through the hub role
+      git_cgallagher.aws.ssm_parameter:
+        name: "{{ aws_param_name }}"
+        value: "{{ aws_param_value }}"
+        string_type: SecureString
+        description: Database password
+        tags:
+          Owner: molecule
+      register: aws_written
+
+    # True after the first run and after the idempotence run alike.
+    - name: Check the result
+      ansible.builtin.assert:
+        that:
+          - aws_written.parameter_metadata.name == aws_param_name
+          - aws_written.parameter_metadata.type == 'SecureString'
+          - aws_written.parameter_metadata.description == 'Database password'
+          - "aws_written.parameter_metadata.tags == {'Owner': 'molecule'}"
+          - aws_param_value not in (aws_written | to_json)
+        fail_msg: "Unexpected metadata: {{ aws_written.parameter_metadata }}"

@@ -1,0 +1,22 @@
+---
+# The module's only dependency goes on the node, not the controller: if the
+# module ran anywhere but node1, it couldn't import boto3.
+- name: Prepare the node
+  hosts: nodes
+  gather_facts: false
+  tasks:
+    # The driver doesn't wait for a container's service; moto takes a moment.
+    - name: Wait for moto
+      ansible.builtin.wait_for:
+        host: moto
+        port: 5000
+        timeout: 120
+
+    # The same floors as the collection's requirements.txt. pip directly:
+    # ansible.builtin.pip needs the packaging library on the node, which the
+    # slim image doesn't have.
+    - name: Install boto3
+      ansible.builtin.command:
+        argv: [python3, -m, pip, install, --disable-pip-version-check, --root-user-action=ignore, boto3>=1.28.0, botocore>=1.31.0]
+      register: aws_pip
+      changed_when: "'Successfully installed' in aws_pip.stdout"
