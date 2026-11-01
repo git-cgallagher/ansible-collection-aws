@@ -1,0 +1,32 @@
+namespace: git_cgallagher
+name: aws
+version: 0.1.0
+readme: README.md
+authors:
+  - Chris Gallagher (@git-cgallagher)
+description: >-
+  AWS automation that works across accounts, starting with an SSM Parameter
+  Store lookup that assumes an IAM role from an account, role name and region.
+license:
+  - MIT
+tags:
+  - aws
+  - cloud
+  - ssm
+  - parameterstore
+  - sts
+dependencies: {}
+repository: https://github.com/git-cgallagher/ansible-collection-aws
+documentation: https://github.com/git-cgallagher/ansible-collection-aws#readme
+issues: https://github.com/git-cgallagher/ansible-collection-aws/issues
+build_ignore:
+  - .github
+  - .ansible
+  - collections
+  - tests
+  - '*.tar.gz'
+  - .ansible-lint
+  - .yamllint
+  - .gitignore
+  - .pytest_cache
+  - AGENTS.md

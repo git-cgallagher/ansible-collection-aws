@@ -1,0 +1,30 @@
+---
+# Example: read SSM parameters from several AWS accounts by assuming a role in each.
+#
+#   ansible-playbook examples/cross_account_ssm.yml -e target_account=123456789012
+#
+- name: Cross-account SSM Parameter Store lookups
+  hosts: localhost
+  gather_facts: false
+  vars:
+    aws_region: us-east-1
+    target_account: "123456789012"
+    reader_role: ParamReader
+  tasks:
+    - name: Read a single SecureString from the target account
+      ansible.builtin.set_fact:
+        db_password: >-
+          {{ lookup('git_cgallagher.aws.ssm_parameter', '/app/prod/db/password',
+                    account=target_account, role_name=reader_role, region=aws_region) }}
+      no_log: true
+
+    - name: Read a whole config tree into a dictionary
+      ansible.builtin.set_fact:
+        app_config: >-
+          {{ lookup('git_cgallagher.aws.ssm_parameter', '/app/prod/', bypath=true, recursive=true,
+                    droppath=true, account=target_account, role_name=reader_role,
+                    region=aws_region) }}
+
+    - name: Show the non-secret config
+      ansible.builtin.debug:
+        var: app_config
