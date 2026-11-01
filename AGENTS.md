@@ -60,6 +60,10 @@ the scenario doesn't repeat them.
 
 ## Conventions
 
+- **Every CI job sets `timeout-minutes`** (2026-11-01): GitHub's default is 6
+  hours, and a stalled install or image pull would hold the runner that long.
+  15 minutes per job (30 for `molecule`), several times their slowest green run
+  (2.9 min). A new job needs one too.
 - A shared role/credential option is declared in **four** places that must
   agree: the `aws_role` doc fragment, `sts.ROLE_OPTIONS`,
   `sts.role_argument_spec()` (a unit test checks these two match) and
