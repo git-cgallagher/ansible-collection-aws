@@ -40,6 +40,24 @@ only through the lookup's role assumption. moto doesn't enforce IAM or trust
 policies, so `on_denied` and AssumeRole failures are covered by unit tests
 with mocked errors, not end to end.
 
+The module also runs on a **real remote host** in the Molecule scenario
+`tests/integration/molecule/ssm_parameter` (CI job `molecule ssm_parameter`),
+on the shared `molecule-git-cgallagher` driver like the other git_cgallagher
+collections. `node1`, a `python:3.13-slim` container reached over the docker
+connection, writes a SecureString through the Hub → ParamWriter chain into
+moto, which runs in a second container (`motoserver/moto:5.2.5`) on a shared
+Docker network. boto3 is installed on `node1` only, and the controller image
+has none, so the module can only have run there. It checks:
+- idempotence: a second converge changes nothing.
+- in check mode through the chain: the same value is unchanged, while a
+  different value or `state: absent` would change.
+- in check mode with the base credentials, the same value would change, so
+  the parameter only exists in the target account.
+- the value never appears in a result.
+
+The integration targets cover the lookup; lookups run on the controller, so
+the scenario doesn't repeat them.
+
 ## Conventions
 
 - A shared role/credential option is declared in **four** places that must
@@ -86,11 +104,30 @@ ansible-test units --docker default         # or: python -m pytest tests/unit
 ansible-test integration --docker default   # or --local (needs moto[server])
 yamllint . && ansible-lint
 
+# the Molecule scenario, exactly as CI runs it: in the ansible-runtime image
+# (driver included), from tests/integration. Needs Docker, nothing else.
+export RUNTIME_IMAGE=$(sed -n 's/^  RUNTIME_IMAGE: //p' .github/workflows/ansible-test.yml)
+(cd tests/integration && ../../.github/ci/runtime.sh molecule test -s ssm_parameter)
+
 # build the tarball
 ansible-galaxy collection build --force
 ```
 
 ## ⚠️ Gotchas
+
+- **The Molecule scenario has no base config on purpose.** The version gate
+  counts `.config/` as shipped, so `.config/molecule/config.yml` would force a
+  release. Everything lives in the scenario's `molecule.yml`, and
+  `.github/ci/runtime.sh` links the checkout in as `git_cgallagher.aws` under
+  `collections/`, which `.gitignore` and `build_ignore` already cover, rather
+  than isc's `.molecule-collections/`, which `build_ignore` doesn't.
+- **moto's image runs the server as its entrypoint**
+  (`moto_server -H 0.0.0.0`, port 5000), so its platform sets
+  `override_command: false`. Without it, the docker kind's default command
+  (`sleep infinity`) is passed to moto_server as arguments.
+- **`ansible.builtin.pip` needs the `packaging` library on the target**, and
+  `python:3.13-slim` doesn't have it, so the scenario's prepare runs
+  `python3 -m pip` instead (learned writing the scenario, 2026-11-01).
 
 - **boto3 doesn't read `AWS_REGION` in every version** (only
   `AWS_DEFAULT_REGION`). The plugin reads both itself through its `region`
@@ -117,3 +154,9 @@ ansible-galaxy collection build --force
   portably across ansible-core 2.18–2.21 (`_ANSIBLE_ARGS` vs
   `patch_module_args`) isn't worth it; the integration target covers it
   end to end against moto.
+
+## TODO
+
+- Make `molecule ssm_parameter` a required check in the "main protection"
+  ruleset once it has passed on main (added 2026-11-01). Per the workspace
+  baseline, a check is only required after it has run, so its name is known.

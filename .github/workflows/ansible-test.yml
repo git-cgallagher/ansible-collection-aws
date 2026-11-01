@@ -15,6 +15,10 @@ permissions:
 env:
   PY_COLORS: '1'
   ANSIBLE_FORCE_COLOR: '1'
+  # The pinned toolchain the molecule job runs in (.github/ci/runtime.sh): ansible-core,
+  # Molecule with the molecule-git-cgallagher driver, the docker CLI. The same tag and
+  # digest as the other git_cgallagher collections.
+  RUNTIME_IMAGE: ghcr.io/git-cgallagher/ansible-runtime:0.2.1-ci@sha256:fa62b5e75f327ebe756b76af2af643e30a90314d7a787e389f1ad5ee7f2c24ea
 
 jobs:
   # Every merge to main is releasable (release.yml), so a PR that changes
@@ -112,6 +116,24 @@ jobs:
         with:
           ansible-core-version: ${{ matrix.ansible-core-version }}
           testing-type: integration
+
+  # The ssm_parameter module on a real remote host: a container over the docker
+  # connection, against moto in a second container, on the shared
+  # molecule-git-cgallagher driver (tests/integration/molecule/ssm_parameter).
+  # The integration targets above run the module through the local connection.
+  molecule:
+    name: molecule ssm_parameter
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      # A run that never releases a host hangs instead of failing, hence the limit.
+      - name: molecule test
+        timeout-minutes: 15
+        working-directory: tests/integration
+        run: ../../.github/ci/runtime.sh molecule test -s ssm_parameter
 
   lint:
     runs-on: ubuntu-latest
