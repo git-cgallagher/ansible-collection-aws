@@ -158,15 +158,15 @@ ansible-galaxy collection build --force
   portably across ansible-core 2.18–2.21 (`_ANSIBLE_ARGS` vs
   `patch_module_args`) isn't worth it; the integration target covers it
   end to end against moto.
-- **`sanity (devel)` has failed on every push to main so far** (all four
-  runs on 2026-11-01), before any test starts: ansible-test devel can't set
-  up its test container (`default-test-container:v2.23-2`) on GitHub's
-  runner. The step fails with
+- **`sanity (devel)` runs in a venv, not in ansible-test's container.**
+  devel's test container (`default-test-container:v2.23-2`) can't start on
+  GitHub's runner: the step failed with
   `nsenter … sh -c 'mount -o remount,rw /sys/fs/cgroup/ && pkill sleep'`
-  returning exit status 1. That's upstream, not this collection, and the job
-  is a canary (main and the weekly run only, `continue-on-error`, never
-  required). Before reading anything into a red devel run, check its log:
-  with this error, no test ran.
+  returning exit status 1, before any test ran, on all four pushes to main
+  on 2026-11-01. So the job installs ansible-core devel itself and runs
+  `ansible-test sanity --venv`, as git_cgallagher.molecule and
+  git_cgallagher.orchestration do. It's still a canary: main and the weekly
+  run only, `continue-on-error`, never required.
 
 ## TODO
 

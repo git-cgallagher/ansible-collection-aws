@@ -80,7 +80,10 @@ jobs:
           testing-type: sanity
 
   # Early warning against ansible-core's development branch, never a merge
-  # gate: an upstream breakage shouldn't read as a failed PR check.
+  # gate: an upstream breakage shouldn't read as a failed PR check. devel's
+  # test container can't start on GitHub runners (ansible-test fails
+  # remounting /sys/fs/cgroup), so it runs in a venv instead, as
+  # git_cgallagher.molecule and git_cgallagher.orchestration do.
   sanity-devel:
     name: sanity (devel)
     if: github.event_name != 'pull_request'
@@ -88,10 +91,18 @@ jobs:
     timeout-minutes: 15
     continue-on-error: true
     steps:
-      - uses: ansible-community/ansible-test-gh-action@6ded727edb598e670ac056a8e680ca4050bac0a3  # v1.18.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          ansible-core-version: devel
-          testing-type: sanity
+          path: ansible_collections/git_cgallagher/aws
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: '3.14'
+      - name: Install ansible-core devel
+        run: pip install https://github.com/ansible/ansible/archive/devel.tar.gz
+      - name: Run sanity tests
+        working-directory: ansible_collections/git_cgallagher/aws
+        run: ansible-test sanity --venv --python 3.14 --requirements --color -v
 
   # pytest + moto (tests/unit). Includes a check that assuming the role really
   # reads from the other account, and the STS credential cache.
