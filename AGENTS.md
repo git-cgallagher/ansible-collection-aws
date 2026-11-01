@@ -41,13 +41,14 @@ policies, so `on_denied` and AssumeRole failures are covered by unit tests
 with mocked errors, not end to end.
 
 The module also runs on a **real remote host** in the Molecule scenario
-`tests/integration/molecule/ssm_parameter` (CI job `molecule ssm_parameter`),
-on the shared `molecule-git-cgallagher` driver like the other git_cgallagher
-collections. `node1`, a `python:3.13-slim` container reached over the docker
-connection, writes a SecureString through the Hub → ParamWriter chain into
-moto, which runs in a second container (`motoserver/moto:5.2.5`) on a shared
-Docker network. boto3 is installed on `node1` only, and the controller image
-has none, so the module can only have run there. It checks:
+`tests/integration/molecule/ssm_parameter` (CI job `molecule ssm_parameter`,
+a required check since 2026-11-01), on the shared `molecule-git-cgallagher`
+driver like the other git_cgallagher collections. `node1`, a `python:3.13-slim`
+container reached over the docker connection, writes a SecureString through
+the Hub → ParamWriter chain into moto, which runs in a second container
+(`motoserver/moto:5.2.5`) on a shared Docker network. boto3 is installed on
+`node1` only, and the controller image has none, so the module can only have
+run there. It checks:
 - idempotence: a second converge changes nothing.
 - in check mode through the chain: the same value is unchanged, while a
   different value or `state: absent` would change.
@@ -132,7 +133,6 @@ ansible-galaxy collection build --force
 - **`ansible.builtin.pip` needs the `packaging` library on the target**, and
   `python:3.13-slim` doesn't have it, so the scenario's prepare runs
   `python3 -m pip` instead (learned writing the scenario, 2026-11-01).
-
 - **boto3 doesn't read `AWS_REGION` in every version** (only
   `AWS_DEFAULT_REGION`). The plugin reads both itself through its `region`
   option's `env:` entries; don't remove them in favour of boto3's lookup.
@@ -158,9 +158,16 @@ ansible-galaxy collection build --force
   portably across ansible-core 2.18–2.21 (`_ANSIBLE_ARGS` vs
   `patch_module_args`) isn't worth it; the integration target covers it
   end to end against moto.
+- **`sanity (devel)` has failed on every push to main so far** (all four
+  runs on 2026-11-01), before any test starts: ansible-test devel can't set
+  up its test container (`default-test-container:v2.23-2`) on GitHub's
+  runner. The step fails with
+  `nsenter … sh -c 'mount -o remount,rw /sys/fs/cgroup/ && pkill sleep'`
+  returning exit status 1. That's upstream, not this collection, and the job
+  is a canary (main and the weekly run only, `continue-on-error`, never
+  required). Before reading anything into a red devel run, check its log:
+  with this error, no test ran.
 
 ## TODO
 
-- Make `molecule ssm_parameter` a required check in the "main protection"
-  ruleset once it has passed on main (added 2026-11-01). Per the workspace
-  baseline, a check is only required after it has run, so its name is known.
+- Nothing open.
