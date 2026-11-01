@@ -1,0 +1,106 @@
+---
+- name: Test the git_cgallagher.aws.ssm_parameter lookup against moto
+  hosts: localhost
+  gather_facts: false
+  vars:
+    target_account: '222222222222'
+    endpoints:
+      region: us-east-1
+      endpoint_url: '{{ moto_endpoint }}'
+      sts_endpoint_url: '{{ moto_endpoint }}'
+    cross: '{{ endpoints | combine({"account": target_account, "role_name": "ParamReader"}) }}'
+  tasks:
+    - name: Read from the base credentials' own account
+      ansible.builtin.assert:
+        that:
+          - lookup('git_cgallagher.aws.ssm_parameter', '/base/greeting', **endpoints) == 'hello from base'
+
+    - name: Fail on a target-account parameter without assuming a role
+      ansible.builtin.set_fact:
+        unreachable: "{{ lookup('git_cgallagher.aws.ssm_parameter', '/app/prod/db/password', **endpoints) }}"
+      register: no_role
+      ignore_errors: true
+
+    - name: Check that the parameter was not found without the role
+      ansible.builtin.assert:
+        that:
+          - no_role is failed
+          - "'not found' in no_role.msg"
+
+    - name: Read a SecureString through account and role_name
+      ansible.builtin.assert:
+        that:
+          - lookup('git_cgallagher.aws.ssm_parameter', '/app/prod/db/password', **cross) == 'hunter2'
+
+    - name: Read through a full role ARN with an external ID and session name
+      ansible.builtin.assert:
+        that:
+          - >-
+            lookup('git_cgallagher.aws.ssm_parameter', '/app/prod/db/host',
+                   role_arn='arn:aws:iam::' ~ target_account ~ ':role/ParamReader',
+                   external_id='ext-123', role_session_name='integration', **endpoints) == 'db.internal'
+
+    - name: Return one value per term with query
+      ansible.builtin.assert:
+        that:
+          - query('git_cgallagher.aws.ssm_parameter', '/app/prod/db/host', '/app/prod/port', **cross) == ['db.internal', '5432']
+
+    - name: Return a StringList as its raw string
+      ansible.builtin.assert:
+        that:
+          - (lookup('git_cgallagher.aws.ssm_parameter', '/app/prod/hosts', **cross) | split(',')) == ['a', 'b', 'c']
+
+    - name: Leave a SecureString encrypted with decrypt=false
+      ansible.builtin.assert:
+        that:
+          - lookup('git_cgallagher.aws.ssm_parameter', '/app/prod/db/password', decrypt=false, **cross) != 'hunter2'
+
+    - name: Read a path non-recursively
+      ansible.builtin.assert:
+        that:
+          - >-
+            lookup('git_cgallagher.aws.ssm_parameter', '/app/prod', bypath=true, **cross)
+            == {'/app/prod/port': '5432', '/app/prod/hosts': 'a,b,c'}
+
+    - name: Read a path recursively with droppath
+      ansible.builtin.assert:
+        that:
+          - >-
+            lookup('git_cgallagher.aws.ssm_parameter', '/app/prod/', bypath=true, recursive=true, droppath=true, **cross)
+            == {'db/password': 'hunter2', 'db/host': 'db.internal', 'port': '5432', 'hosts': 'a,b,c'}
+
+    - name: Read a path recursively with shortnames
+      ansible.builtin.assert:
+        that:
+          - >-
+            lookup('git_cgallagher.aws.ssm_parameter', '/app/prod', bypath=true, recursive=true, shortnames=true, **cross)
+            == {'password': 'hunter2', 'host': 'db.internal', 'port': '5432', 'hosts': 'a,b,c'}
+
+    - name: Return None for a missing parameter with on_missing=skip
+      ansible.builtin.assert:
+        that:
+          - query('git_cgallagher.aws.ssm_parameter', '/app/prod/port', '/app/prod/nope', on_missing='skip', **cross) == ['5432', None]
+
+    - name: Fall back to a default for a missing parameter with on_missing=warn
+      ansible.builtin.assert:
+        that:
+          - (lookup('git_cgallagher.aws.ssm_parameter', '/app/prod/nope', on_missing='warn', **cross) | default('fallback', true)) == 'fallback'
+
+    - name: Reject account without role_name
+      ansible.builtin.set_fact:
+        bad: "{{ lookup('git_cgallagher.aws.ssm_parameter', '/x', account=target_account, **endpoints) }}"
+      register: bad_args
+      ignore_errors: true
+
+    - name: Check the option validation error
+      ansible.builtin.assert:
+        that:
+          - bad_args is failed
+          - "'must be given together' in bad_args.msg"
+
+    - name: Take the region from AWS_DEFAULT_REGION when none is passed
+      ansible.builtin.assert:
+        that:
+          - >-
+            lookup('git_cgallagher.aws.ssm_parameter', '/app/prod/port', account=target_account, role_name='ParamReader',
+                   endpoint_url=moto_endpoint, sts_endpoint_url=moto_endpoint) == '5432'
