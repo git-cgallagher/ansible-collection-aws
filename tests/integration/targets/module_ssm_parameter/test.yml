@@ -1,0 +1,189 @@
+---
+- name: Test the git_cgallagher.aws.ssm_parameter module against moto
+  hosts: localhost
+  gather_facts: false
+  vars:
+    # The module runs through the local connection; use the controller's Python, which has boto3.
+    ansible_python_interpreter: '{{ ansible_playbook_python }}'
+    target_account: '222222222222'
+    hub_arn: arn:aws:iam::111111111111:role/Hub
+    endpoints:
+      region: us-east-1
+      endpoint_url: '{{ moto_endpoint }}'
+      sts_endpoint_url: '{{ moto_endpoint }}'
+    cross: '{{ endpoints | combine({"account": target_account, "role_name": "ParamWriter"}) }}'
+    chained: '{{ cross | combine({"via_role_arns": [hub_arn]}) }}'
+  module_defaults:
+    git_cgallagher.aws.ssm_parameter: '{{ chained }}'
+  tasks:
+    - name: Create a SecureString in the target account through a hub role
+      git_cgallagher.aws.ssm_parameter:
+        name: /app/prod/db/password
+        value: hunter2
+        string_type: SecureString
+        description: Database password
+      register: created
+
+    - name: Check the create result
+      ansible.builtin.assert:
+        that:
+          - created is changed
+          - created.parameter_metadata.name == '/app/prod/db/password'
+          - created.parameter_metadata.type == 'SecureString'
+          - created.parameter_metadata.version == 1
+          - created.parameter_metadata.description == 'Database password'
+          - created.parameter_metadata.key_id is defined
+          - "'hunter2' not in (created | to_json)"
+
+    - name: Read it back through the same chain with the lookup
+      ansible.builtin.assert:
+        that:
+          - lookup('git_cgallagher.aws.ssm_parameter', '/app/prod/db/password', via_role_arns=[hub_arn], **cross) == 'hunter2'
+
+    - name: Confirm the base credentials cannot see it (it really is in the target account)
+      ansible.builtin.assert:
+        that:
+          - lookup('git_cgallagher.aws.ssm_parameter', '/app/prod/db/password', on_missing='skip', **endpoints) is none
+
+    - name: Run the same task again
+      git_cgallagher.aws.ssm_parameter:
+        name: /app/prod/db/password
+        value: hunter2
+        string_type: SecureString
+        description: Database password
+      register: again
+
+    - name: Check idempotence
+      ansible.builtin.assert:
+        that:
+          - again is not changed
+          - again.parameter_metadata.version == 1
+
+    - name: Leave an existing parameter alone with overwrite_value=never
+      git_cgallagher.aws.ssm_parameter:
+        name: /app/prod/db/password
+        value: changed-by-mistake
+        string_type: SecureString
+        overwrite_value: never
+      register: never
+
+    - name: Check overwrite_value=never
+      ansible.builtin.assert:
+        that:
+          - never is not changed
+          - lookup('git_cgallagher.aws.ssm_parameter', '/app/prod/db/password', **chained) == 'hunter2'
+
+    - name: Preview a value change in check mode
+      git_cgallagher.aws.ssm_parameter:
+        name: /app/prod/db/password
+        value: hunter3
+        string_type: SecureString
+      check_mode: true
+      register: preview
+
+    - name: Check that check mode reports but does not write
+      ansible.builtin.assert:
+        that:
+          - preview is changed
+          - lookup('git_cgallagher.aws.ssm_parameter', '/app/prod/db/password', **chained) == 'hunter2'
+
+    - name: Change the value for real
+      git_cgallagher.aws.ssm_parameter:
+        name: /app/prod/db/password
+        value: hunter3
+        string_type: SecureString
+      register: updated
+
+    - name: Check the update kept the description and bumped the version
+      ansible.builtin.assert:
+        that:
+          - updated is changed
+          - updated.parameter_metadata.version == 2
+          - updated.parameter_metadata.description == 'Database password'
+          - lookup('git_cgallagher.aws.ssm_parameter', '/app/prod/db/password', **chained) == 'hunter3'
+
+    - name: Change only the description
+      git_cgallagher.aws.ssm_parameter:
+        name: /app/prod/db/password
+        value: hunter3
+        string_type: SecureString
+        description: Rotated database password
+      register: described
+
+    - name: Check the description change counts as a change
+      ansible.builtin.assert:
+        that:
+          - described is changed
+          - described.parameter_metadata.description == 'Rotated database password'
+
+    - name: Write a new version every time with overwrite_value=always
+      git_cgallagher.aws.ssm_parameter:
+        name: /app/prod/db/password
+        value: hunter3
+        string_type: SecureString
+        overwrite_value: always
+      register: always_result
+
+    - name: Check overwrite_value=always
+      ansible.builtin.assert:
+        that:
+          - always_result is changed
+          - always_result.parameter_metadata.version == 4
+
+    - name: Write a plain String directly through account and role_name (no hub)
+      git_cgallagher.aws.ssm_parameter:
+        name: /app/prod/db/host
+        value: db.internal
+        via_role_arns: []
+      register: plain
+
+    - name: Check the direct write
+      ansible.builtin.assert:
+        that:
+          - plain is changed
+          - lookup('git_cgallagher.aws.ssm_parameter', '/app/prod/db/host', **cross) == 'db.internal'
+
+    - name: Fail without a value for state=present
+      git_cgallagher.aws.ssm_parameter:
+        name: /app/prod/nothing
+      register: no_value
+      ignore_errors: true
+
+    - name: Check the missing-value error
+      ansible.builtin.assert:
+        that:
+          - no_value is failed
+          - "'value' in no_value.msg"
+
+    - name: Reject account without role_name
+      git_cgallagher.aws.ssm_parameter:
+        name: /app/prod/db/host
+        value: x
+        role_name: ''
+      register: bad_args
+      ignore_errors: true
+
+    - name: Check the option validation error
+      ansible.builtin.assert:
+        that:
+          - bad_args is failed
+          - "'must be given together' in bad_args.msg"
+
+    - name: Delete the parameter
+      git_cgallagher.aws.ssm_parameter:
+        name: /app/prod/db/password
+        state: absent
+      register: deleted
+
+    - name: Delete it again
+      git_cgallagher.aws.ssm_parameter:
+        name: /app/prod/db/password
+        state: absent
+      register: deleted_again
+
+    - name: Check the delete
+      ansible.builtin.assert:
+        that:
+          - deleted is changed
+          - deleted_again is not changed
+          - lookup('git_cgallagher.aws.ssm_parameter', '/app/prod/db/password', on_missing='skip', **chained) is none

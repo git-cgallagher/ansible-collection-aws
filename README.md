@@ -2,16 +2,18 @@
 
 AWS automation for Ansible that works across accounts.
 
-The first plugin is an SSM Parameter Store lookup that **assumes an IAM role** before reading, so
-one controller can pull parameters from many AWS accounts by passing `account`, `role_name` and
-`region`. The `amazon.aws.ssm_parameter` lookup only uses the credentials it is given and can't
-assume a role per lookup.
+An SSM Parameter Store lookup and module that **assume an IAM role** before reading or writing, so
+one controller can manage parameters in many AWS accounts by passing `account`, `role_name` and
+`region`. Both can **chain through intermediate roles** (`via_role_arns`) for controllers that reach
+spoke accounts through a hub role. The `amazon.aws.ssm_parameter` lookup and module only use the
+credentials they are given and can't assume a role, let alone a chain, per task.
 
 ## Included content
 
 | Name | Type | Description |
 |------|------|-------------|
 | `git_cgallagher.aws.ssm_parameter` | lookup | Get SSM Parameter Store values, optionally through an assumed IAM role |
+| `git_cgallagher.aws.ssm_parameter` | module | Create, update or delete SSM Parameter Store parameters, optionally through an assumed IAM role |
 
 ## Requirements
 
@@ -57,17 +59,41 @@ collections:
       {{ lookup('git_cgallagher.aws.ssm_parameter', '/app/prod/', bypath=true, recursive=true,
                 shortnames=true, account='123456789012', role_name='ParamReader',
                 region='eu-west-1') }}
+
+# Through a hub role first, for a controller that can't assume the spoke role directly
+- ansible.builtin.debug:
+    msg: >-
+      {{ lookup('git_cgallagher.aws.ssm_parameter', '/app/db/host',
+                via_role_arns=['arn:aws:iam::999999999999:role/Hub'],
+                account='123456789012', role_name='ParamReader', region='us-east-1') }}
+
+# Writing: the module takes the same role options
+- git_cgallagher.aws.ssm_parameter:
+    name: /app/prod/db/password
+    value: "{{ new_password }}"
+    string_type: SecureString
+    description: Rotated by Ansible
+    via_role_arns: ['arn:aws:iam::999999999999:role/Hub']
+    account: '123456789012'
+    role_name: ParamWriter
+    region: us-east-1
+  delegate_to: localhost
+  no_log: true
 ```
 
-Every option is in `ansible-doc -t lookup git_cgallagher.aws.ssm_parameter`, and
+Every option is in `ansible-doc -t lookup git_cgallagher.aws.ssm_parameter` and
+`ansible-doc -t module git_cgallagher.aws.ssm_parameter`, and
 [`examples/cross_account_ssm.yml`](examples/cross_account_ssm.yml) is a full playbook.
 
 ### Options at a glance
+
+Shared by the lookup and the module:
 
 | Option | Purpose |
 |--------|---------|
 | `account` + `role_name` | Role to assume; the ARN is built as `arn:<partition>:iam::<account>:role/<role_name>` |
 | `role_arn` | Full role ARN, instead of `account` + `role_name` |
+| `via_role_arns` | Roles to assume first, in order (hub → spoke). Chained sessions are capped at one hour by AWS, so `duration_seconds` must be ≤ 3600 |
 | `region` | Region for SSM and STS (falls back to `AWS_REGION`, then `AWS_DEFAULT_REGION`) |
 | `external_id`, `role_session_name`, `duration_seconds` | Passed to `sts:AssumeRole` |
 | `partition` | Override the partition (worked out from `region` by default: `cn-*`, `us-gov-*`, …) |
@@ -77,15 +103,27 @@ Every option is in `ansible-doc -t lookup git_cgallagher.aws.ssm_parameter`, and
 | `bypath`, `recursive`, `shortnames`, `droppath` | Return everything under a path as a dictionary |
 | `on_missing`, `on_denied` | `error` (default), `skip` or `warn` |
 
+Module only:
+
+| Option | Purpose |
+|--------|---------|
+| `name`, `value`, `string_type` | The parameter; `value` is required with `state: present` and never returned |
+| `description`, `key_id`, `tier` | Optional parameter attributes; an existing description is kept when `description` isn't set |
+| `overwrite_value` | `changed` (default): write only when value, type, description, tier or key differ; `never`; `always` |
+| `state` | `present` (default) or `absent` |
+
 ### Credential caching
 
-Assumed role credentials are cached in the controller process for their lifetime (refreshed five
-minutes before expiry), keyed by base identity, role, session name, external ID and duration.
-A loop over 500 hosts in the same account makes one `sts:AssumeRole` call, not 500.
+The lookup caches assumed role credentials in the controller process for their lifetime (refreshed
+five minutes before expiry), one entry per hop, keyed by the identity assuming it, role, session
+name, external ID and duration. A loop over 500 hosts in the same account makes one
+`sts:AssumeRole` call, not 500, and with `via_role_arns` one hub session serves every spoke. The
+module runs in its own process per task and assumes the chain each time.
 
 ### IAM
 
-The base credentials need `sts:AssumeRole` on the target role. The target role needs:
+The base credentials need `sts:AssumeRole` on the target role (or on the first role in
+`via_role_arns`, and each role in the chain on the next). For the lookup the target role needs:
 
 ```json
 {
@@ -105,18 +143,21 @@ The base credentials need `sts:AssumeRole` on the target role. The target role n
 }
 ```
 
+The module additionally needs `ssm:PutParameter`, `ssm:DescribeParameters` and, for
+`state: absent`, `ssm:DeleteParameter`, plus `kms:Encrypt` on the key for SecureStrings.
+
 ## What this doesn't do (yet)
 
-- Role chaining (hub role, then a spoke role) for controllers that can't assume the target role
-  directly.
-- Writing parameters. It's a lookup; use `amazon.aws.ssm_parameter` (the module) to write.
+- Tags on parameters, and parameter policies (expiration, no-change notifications).
+- Reading a parameter's history.
 
 ## Testing
 
 CI runs `ansible-test` sanity, units and integration on ansible-core 2.18–2.21, plus yamllint,
 ansible-lint and a build check. The unit and integration tests run against
 [moto](https://github.com/getmoto/moto), so no AWS account is involved; they check that assuming
-the role really reads from the other account. See `AGENTS.md` for the commands.
+the role (or the chain) really reads from and writes to the other account. See `AGENTS.md` for the
+commands.
 
 ## License
 
