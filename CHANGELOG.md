@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0 — 2026-11-01
+
+- Module `ssm_parameter`: new `tags` (dict) and `purge_tags` (default
+  `true`) options. Tags are set on create and reconciled on update without
+  writing a new parameter version; `tags` left unset leaves existing tags
+  alone (and needs no tag permissions), and `overwrite_value: never` leaves
+  tags alone too. Values are stringified. With `tags` set, the returned
+  `parameter_metadata` includes `tags`.
+
 ## 0.2.0 — 2026-11-01
 
 - New module `git_cgallagher.aws.ssm_parameter`: creates, updates and

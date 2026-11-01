@@ -1,3 +1,8 @@
 boto3
 botocore
-moto[server]>=5.0
+# moto_server for SSM + STS only. Not moto[server]: that extra pulls in cfn-lint,
+# aws-sam-translator and openapi-spec-validator, whose releases have sent pip into
+# a backtracking spiral under ansible-test's constraints (2026-11-01).
+moto[ssm,sts]>=5.0
+flask
+flask-cors

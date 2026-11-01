@@ -143,6 +143,116 @@
           - plain is changed
           - lookup('git_cgallagher.aws.ssm_parameter', '/app/prod/db/host', **cross) == 'db.internal'
 
+    - name: Create a parameter with tags
+      git_cgallagher.aws.ssm_parameter:
+        name: /app/prod/tagged
+        value: v1
+        tags:
+          app: billing
+          env: prod
+          cost_centre: 42
+      register: tagged
+
+    - name: Create the same tagged parameter again
+      git_cgallagher.aws.ssm_parameter:
+        name: /app/prod/tagged
+        value: v1
+        tags:
+          app: billing
+          env: prod
+          cost_centre: '42'
+      register: tagged_again
+
+    - name: Check tags on create and idempotence
+      ansible.builtin.assert:
+        that:
+          - tagged is changed
+          - >-
+            tagged.parameter_metadata.tags == {'app': 'billing', 'env': 'prod', 'cost_centre': '42'}
+          - tagged_again is not changed
+          - tagged_again.parameter_metadata.version == 1
+
+    - name: Change a tag and add one without purging
+      git_cgallagher.aws.ssm_parameter:
+        name: /app/prod/tagged
+        value: v1
+        tags:
+          env: stage
+          team: platform
+        purge_tags: false
+      register: tags_merged
+
+    - name: Check that only the tags changed, and no new version was written
+      ansible.builtin.assert:
+        that:
+          - tags_merged is changed
+          - >-
+            tags_merged.parameter_metadata.tags == {'app': 'billing', 'env': 'stage', 'team': 'platform', 'cost_centre': '42'}
+          - tags_merged.parameter_metadata.version == 1
+
+    - name: Preview a tag purge in check mode
+      git_cgallagher.aws.ssm_parameter:
+        name: /app/prod/tagged
+        value: v1
+        tags:
+          env: stage
+      check_mode: true
+      register: purge_preview
+
+    - name: Purge the other tags for real
+      git_cgallagher.aws.ssm_parameter:
+        name: /app/prod/tagged
+        value: v1
+        tags:
+          env: stage
+      register: purged
+
+    - name: Check the purge
+      ansible.builtin.assert:
+        that:
+          - purge_preview is changed
+          - >-
+            purge_preview.parameter_metadata.tags == {'env': 'stage'}
+          - purged is changed
+          - >-
+            purged.parameter_metadata.tags == {'env': 'stage'}
+          - purged.parameter_metadata.version == 1
+
+    - name: Leave tags alone when tags is not given
+      git_cgallagher.aws.ssm_parameter:
+        name: /app/prod/tagged
+        value: v2
+      register: untagged_update
+
+    - name: Leave everything alone with overwrite_value=never, tags included
+      git_cgallagher.aws.ssm_parameter:
+        name: /app/prod/tagged
+        value: v3
+        tags: {}
+        overwrite_value: never
+      register: never_tags
+
+    - name: Read the tags back after the untagged update
+      git_cgallagher.aws.ssm_parameter:
+        name: /app/prod/tagged
+        value: v2
+        tags:
+          env: stage
+      register: tags_after
+
+    - name: Check tags survive an untagged update and overwrite_value=never
+      ansible.builtin.assert:
+        that:
+          - untagged_update is changed
+          - untagged_update.parameter_metadata.version == 2
+          - "'tags' not in untagged_update.parameter_metadata"
+          - never_tags is not changed
+          - >-
+            never_tags.parameter_metadata.tags == {'env': 'stage'}
+          - tags_after is not changed
+          - >-
+            tags_after.parameter_metadata.tags == {'env': 'stage'}
+
     - name: Fail without a value for state=present
       git_cgallagher.aws.ssm_parameter:
         name: /app/prod/nothing

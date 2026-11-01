@@ -73,6 +73,7 @@ collections:
     value: "{{ new_password }}"
     string_type: SecureString
     description: Rotated by Ansible
+    tags: {app: billing, env: prod}
     via_role_arns: ['arn:aws:iam::999999999999:role/Hub']
     account: '123456789012'
     role_name: ParamWriter
@@ -111,6 +112,7 @@ Module only:
 | `description`, `key_id`, `tier` | Optional parameter attributes; an existing description is kept when `description` isn't set |
 | `overwrite_value` | `changed` (default): write only when value, type, description, tier or key differ; `never`; `always` |
 | `state` | `present` (default) or `absent` |
+| `tags`, `purge_tags` | Tags as a dictionary; set on create, reconciled on update without a new version. `purge_tags` (default `true`) removes tags not listed; leave `tags` unset to keep existing tags |
 
 ### Credential caching
 
@@ -143,12 +145,13 @@ The base credentials need `sts:AssumeRole` on the target role (or on the first r
 }
 ```
 
-The module additionally needs `ssm:PutParameter`, `ssm:DescribeParameters` and, for
-`state: absent`, `ssm:DeleteParameter`, plus `kms:Encrypt` on the key for SecureStrings.
+The module additionally needs `ssm:PutParameter`, `ssm:DescribeParameters` and, for `state: absent`,
+`ssm:DeleteParameter`; only when `tags` is set, `ssm:ListTagsForResource`, `ssm:AddTagsToResource` and
+`ssm:RemoveTagsFromResource`; plus `kms:Encrypt` on the key for SecureStrings.
 
 ## What this doesn't do (yet)
 
-- Tags on parameters, and parameter policies (expiration, no-change notifications).
+- Parameter policies (expiration, no-change notifications).
 - Reading a parameter's history.
 
 ## Testing
