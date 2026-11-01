@@ -158,15 +158,11 @@ ansible-galaxy collection build --force
   portably across ansible-core 2.18–2.21 (`_ANSIBLE_ARGS` vs
   `patch_module_args`) isn't worth it; the integration target covers it
   end to end against moto.
-- **`sanity (devel)` runs in a venv, not in ansible-test's container.**
-  devel's test container (`default-test-container:v2.23-2`) can't start on
-  GitHub's runner: the step failed with
-  `nsenter … sh -c 'mount -o remount,rw /sys/fs/cgroup/ && pkill sleep'`
-  returning exit status 1, before any test ran, on all four pushes to main
-  on 2026-11-01. So the job installs ansible-core devel itself and runs
-  `ansible-test sanity --venv`, as git_cgallagher.molecule and
-  git_cgallagher.orchestration do. It's still a canary: main and the weekly
-  run only, `continue-on-error`, never required.
+- **No ansible-core devel testing, on purpose** (owner, 2026-11-01): CI
+  tests the stable releases in its matrix only. The last devel sanity run (in
+  a venv, aws run 41352740327) flagged `missing-gplv3-license` on both MIT
+  plugins, which 2.18–2.21 don't, so check for it when a newer stable joins
+  the matrix.
 
 ## TODO
 
