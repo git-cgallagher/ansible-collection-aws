@@ -100,15 +100,23 @@ the scenario doesn't repeat them.
 
 `ansible-test` needs the checkout at `ansible_collections/git_cgallagher/aws/`.
 
+Tool versions come from the ansible-runtime image that `RUNTIME_IMAGE` in
+`.github/workflows/ansible-test.yml` pins (its shared dependency model): CI's
+lint, build and Molecule jobs run in it, and `release.yml` installs
+ansible-core from its `constraints.txt`. Only the ansible-test matrix picks
+its own versions. Outside the image, use the same pins:
+
 ```bash
-pip install ansible-core ansible-lint yamllint -r requirements.txt \
+export RUNTIME_IMAGE=$(sed -n 's/^  RUNTIME_IMAGE: //p' .github/workflows/ansible-test.yml)
+docker run --rm "$RUNTIME_IMAGE" cat /usr/share/ansible-runtime/constraints.txt > /tmp/constraints.txt
+pip install -c /tmp/constraints.txt ansible-core ansible-lint yamllint -r requirements.txt \
   -r tests/unit/requirements.txt -r tests/integration/requirements.txt
 
 # what CI runs
 ansible-test sanity --docker default        # or --venv --python 3.13
 ansible-test units --docker default         # or: python -m pytest tests/unit
 ansible-test integration --docker default   # or --local (needs moto[server])
-yamllint . && ansible-lint
+yamllint . && ansible-lint                  # or: .github/ci/runtime.sh ansible-lint
 
 # the Molecule scenario, exactly as CI runs it: in the ansible-runtime image
 # (driver included), from tests/integration. Needs Docker, nothing else.
