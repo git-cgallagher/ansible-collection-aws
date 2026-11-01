@@ -55,8 +55,8 @@ options:
   overwrite_value:
     description:
       - What to do when the parameter already exists.
-      - V(never) leaves it alone, V(changed) updates it only when the value, type, description, tier or key differ,
-        V(always) writes a new version every time.
+      - V(never) leaves it alone (tags included), V(changed) updates it only when the value, type, description,
+        tier, key or tags differ, V(always) writes a new version every time.
     type: str
     choices: [never, changed, always]
     default: changed
@@ -66,6 +66,17 @@ options:
     type: str
     choices: [present, absent]
     default: present
+  tags:
+    description:
+      - Tags to set on the parameter, as a dictionary of key to value.
+      - When not set, existing tags are left alone. Changing only the tags does not write a new parameter version.
+      - Ignored with O(overwrite_value=never) on an existing parameter.
+    type: dict
+  purge_tags:
+    description:
+      - With O(tags), remove tags that are not in O(tags).
+    type: bool
+    default: true
   role_session_name:
     default: ansible-ssm-parameter
 extends_documentation_fragment:
@@ -81,7 +92,8 @@ notes:
   - Requires C(boto3) and C(botocore) where the module runs.
   - The base credentials need C(sts:AssumeRole) on the first role in the chain, and the target role needs
     C(ssm:GetParameter), C(ssm:DescribeParameters) and C(ssm:PutParameter) (plus C(ssm:DeleteParameter) for
-    O(state=absent)) and C(kms:Encrypt)/C(kms:Decrypt) on the key used by any C(SecureString).
+    O(state=absent); and C(ssm:ListTagsForResource), C(ssm:AddTagsToResource) and C(ssm:RemoveTagsFromResource)
+    only when O(tags) is set) and C(kms:Encrypt)/C(kms:Decrypt) on the key used by any C(SecureString).
   - The parameter's value is never returned; read it back with the P(git_cgallagher.aws.ssm_parameter#lookup) lookup.
 """
 
@@ -104,6 +116,21 @@ EXAMPLES = r"""
     string_type: SecureString
     via_role_arns:
       - arn:aws:iam::999999999999:role/Hub
+    account: '123456789012'
+    role_name: ParamWriter
+    region: us-west-2
+  delegate_to: localhost
+  no_log: true
+
+- name: Tag a parameter, keeping tags set elsewhere
+  git_cgallagher.aws.ssm_parameter:
+    name: /app/prod/db/password
+    value: "{{ db_password }}"
+    string_type: SecureString
+    tags:
+      app: billing
+      env: prod
+    purge_tags: false
     account: '123456789012'
     role_name: ParamWriter
     region: us-west-2
@@ -174,6 +201,11 @@ parameter_metadata:
       type: str
       returned: when the parameter exists
       sample: '2026-11-01T17:30:00+00:00'
+    tags:
+      description: Tags on the parameter.
+      type: dict
+      returned: when O(tags) is set and the parameter exists
+      sample: {"app": "billing", "env": "prod"}
 """
 
 from ansible.module_utils.basic import AnsibleModule, missing_required_lib
@@ -202,7 +234,34 @@ def _get_existing(client, name):
     return param
 
 
-def _metadata(param):
+def _get_tags(client, name):
+    tags = client.list_tags_for_resource(ResourceType="Parameter", ResourceId=name).get("TagList", [])
+    return dict((t["Key"], t["Value"]) for t in tags)
+
+
+def _normalise_tags(tags):
+    """Tag keys and values are strings; YAML may hand over numbers or booleans."""
+    return dict((str(k), str(v)) for k, v in (tags or {}).items())
+
+
+def _tag_changes(current, desired, purge):
+    """(tags to add or update, keys to remove) to get from current to desired."""
+    if desired is None:
+        return {}, []
+    desired = _normalise_tags(desired)
+    add = dict((k, v) for k, v in desired.items() if current.get(k) != v)
+    remove = [k for k in current if k not in desired] if purge else []
+    return add, remove
+
+
+def _apply_tags(client, name, add, remove):
+    if add:
+        client.add_tags_to_resource(ResourceType="Parameter", ResourceId=name, Tags=[{"Key": k, "Value": v} for k, v in add.items()])
+    if remove:
+        client.remove_tags_from_resource(ResourceType="Parameter", ResourceId=name, TagKeys=remove)
+
+
+def _metadata(param, tags=None):
     if not param:
         return {}
     modified = param.get("LastModifiedDate")
@@ -217,6 +276,8 @@ def _metadata(param):
     }
     if param.get("KeyId"):
         meta["key_id"] = param["KeyId"]
+    if tags is not None:
+        meta["tags"] = dict(tags)
     return meta
 
 
@@ -234,6 +295,9 @@ def _differs(existing, p):
 
 def _put(client, p, existing):
     kwargs = {"Name": p["name"], "Value": p["value"], "Type": p["string_type"]}
+    # Tags are only accepted on create; an existing parameter's tags are reconciled separately.
+    if not existing and p["tags"]:
+        kwargs["Tags"] = [{"Key": k, "Value": v} for k, v in _normalise_tags(p["tags"]).items()]
     if p["description"] is not None:
         kwargs["Description"] = p["description"]
     elif existing and existing.get("Description"):
@@ -257,6 +321,8 @@ def main():
         tier=dict(type="str", choices=["Standard", "Advanced", "Intelligent-Tiering"]),
         overwrite_value=dict(type="str", default="changed", choices=["never", "changed", "always"]),
         state=dict(type="str", default="present", choices=["present", "absent"]),
+        tags=dict(type="dict"),
+        purge_tags=dict(type="bool", default=True),
     )
     argument_spec.update(sts.role_argument_spec(session_name_default="ansible-ssm-parameter"))
 
@@ -288,12 +354,25 @@ def main():
                 client.delete_parameter(Name=p["name"])
             module.exit_json(changed=True, parameter_metadata={})
 
-        if existing is not None:
-            if p["overwrite_value"] == "never":
-                module.exit_json(changed=False, parameter_metadata=_metadata(existing), msg="Parameter exists and overwrite_value is never.")
-            if p["overwrite_value"] == "changed" and not _differs(existing, p):
-                module.exit_json(changed=False, parameter_metadata=_metadata(existing))
+        # Tags are only read (ssm:ListTagsForResource) when the task manages them, so a role granted the
+        # pre-tags permission set keeps working.
+        manage_tags = p["tags"] is not None
+        current_tags = _get_tags(client, p["name"]) if existing is not None and manage_tags else {}
 
+        if existing is not None and p["overwrite_value"] == "never":
+            module.exit_json(
+                changed=False,
+                parameter_metadata=_metadata(existing, current_tags if manage_tags else None),
+                msg="Parameter exists and overwrite_value is never.",
+            )
+
+        write = existing is None or p["overwrite_value"] == "always" or _differs(existing, p)
+        tag_add, tag_remove = _tag_changes(current_tags, p["tags"], p["purge_tags"])
+        if not write and not tag_add and not tag_remove:
+            module.exit_json(changed=False, parameter_metadata=_metadata(existing, current_tags if manage_tags else None))
+
+        predicted_tags = dict((k, v) for k, v in current_tags.items() if k not in tag_remove)
+        predicted_tags.update(tag_add)
         if module.check_mode:
             predicted = dict(existing or {}, Name=p["name"], Type=p["string_type"])
             if p["description"] is not None:
@@ -302,10 +381,14 @@ def main():
                 predicted["Tier"] = p["tier"]
             if p["key_id"]:
                 predicted["KeyId"] = p["key_id"]
-            module.exit_json(changed=True, parameter_metadata=_metadata(predicted))
+            module.exit_json(changed=True, parameter_metadata=_metadata(predicted, predicted_tags if manage_tags else None))
 
-        _put(client, p, existing)
-        module.exit_json(changed=True, parameter_metadata=_metadata(_get_existing(client, p["name"])))
+        if write:
+            _put(client, p, existing)
+        if existing is not None:
+            _apply_tags(client, p["name"], tag_add, tag_remove)
+        final_tags = _get_tags(client, p["name"]) if manage_tags else None
+        module.exit_json(changed=True, parameter_metadata=_metadata(_get_existing(client, p["name"]), final_tags))
     except (botocore.exceptions.ClientError, botocore.exceptions.BotoCoreError) as e:
         module.fail_json(msg="SSM request for parameter %s failed: %s" % (p["name"], to_native(e)))
 

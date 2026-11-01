@@ -56,6 +56,10 @@ with mocked errors, not end to end.
   ID; the final hop gets `duration_seconds` and `external_id`.
   `duration_seconds` > 3600 with `via_role_arns` is rejected up front
   because AWS would reject the final hop anyway.
+- Tags: `PutParameter` accepts `Tags` only on create (AWS and moto both
+  reject `Overwrite` + `Tags` with a ValidationException), so an existing
+  parameter's tags go through `AddTagsToResource`/`RemoveTagsFromResource`
+  and a tags-only change writes no new version.
 - The module never returns the parameter value (`parameter_metadata` only)
   and `value` is `no_log`. validate-modules insists on an explicit `no_log`
   for `access_key`, `secret_key`, `session_token` and `key_id`.
@@ -103,6 +107,12 @@ ansible-galaxy collection build --force
 - **No `key: value` text inside a plain YAML scalar in `DOCUMENTATION`.**
   `C(delegate_to: localhost)` in a description broke `ansible-doc` for the
   module ("could not find expected ':'"); say it in words instead.
+- **`tests/integration/requirements.txt` deliberately avoids `moto[server]`.**
+  That extra pulls in cfn-lint, aws-sam-translator and openapi-spec-validator;
+  on 2026-11-01 a new release of one of them sent pip backtracking through
+  Python 2 era packages under ansible-test's constraints and the integration
+  job died in `pip install`. `moto[ssm,sts]` + `flask` + `flask-cors` is all
+  `moto_server` needs here (proven for put/get/tags/STS through the server).
 - **The module has no unit tests on purpose.** Patching module args
   portably across ansible-core 2.18–2.21 (`_ANSIBLE_ARGS` vs
   `patch_module_args`) isn't worth it; the integration target covers it
