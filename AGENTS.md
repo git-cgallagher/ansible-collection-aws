@@ -46,9 +46,10 @@ a required check since 2026-11-01), on the shared `molecule-git-cgallagher`
 driver like the other git_cgallagher collections. `node1`, a `python:3.13-slim`
 container reached over the docker connection, writes a SecureString through
 the Hub → ParamWriter chain into moto, which runs in a second container
-(`motoserver/moto:5.2.5`) on a shared Docker network. boto3 is installed on
-`node1` only, and the controller image has none, so the module can only have
-run there. It checks:
+(`motoserver/moto:5.2.5`) on a shared Docker network. boto3 lives in a venv
+only `node1` has (`/opt/aws`), and `node1`'s `ansible_python_interpreter`
+points into it, so the module can only have run there, whatever the
+controller image contains. It checks:
 - idempotence: a second converge changes nothing.
 - in check mode through the chain: the same value is unchanged, while a
   different value or `state: absent` would change.
@@ -113,6 +114,9 @@ yamllint . && ansible-lint
 # (driver included), from tests/integration. Needs Docker, nothing else.
 export RUNTIME_IMAGE=$(sed -n 's/^  RUNTIME_IMAGE: //p' .github/workflows/ansible-test.yml)
 (cd tests/integration && ../../.github/ci/runtime.sh molecule test -s ssm_parameter)
+# step by step: one container for all the steps (see Gotchas)
+(cd tests/integration && ../../.github/ci/runtime.sh bash -c \
+  'molecule create -s ssm_parameter && molecule converge -s ssm_parameter; molecule destroy -s ssm_parameter')
 
 # build the tarball
 ansible-galaxy collection build --force
@@ -120,6 +124,12 @@ ansible-galaxy collection build --force
 
 ## ⚠️ Gotchas
 
+- **Each `runtime.sh` call is a fresh container**, and Molecule keeps a
+  scenario's state (its instance config) under `~/.ansible/tmp` inside it. So
+  `molecule create`, then a separate `molecule prepare` call, finds no
+  instances and falls back to SSH ("Could not resolve hostname node1"). Run
+  single steps together in one `runtime.sh bash -c '…'` (Commands), or use
+  `molecule test` as CI does. Learned 2026-11-01.
 - **The Molecule scenario has no base config on purpose.** The version gate
   counts `.config/` as shipped, so `.config/molecule/config.yml` would force a
   release. Everything lives in the scenario's `molecule.yml`, and
@@ -132,7 +142,13 @@ ansible-galaxy collection build --force
   (`sleep infinity`) is passed to moto_server as arguments.
 - **`ansible.builtin.pip` needs the `packaging` library on the target**, and
   `python:3.13-slim` doesn't have it, so the scenario's prepare runs
-  `python3 -m pip` instead (learned writing the scenario, 2026-11-01).
+  `python -m pip` instead (learned writing the scenario, 2026-11-01).
+- **`node1`'s interpreter is the venv the scenario's prepare builds**
+  (`/opt/aws/bin/python`), so `prepare.yml` sets `ansible_python_interpreter`
+  back to the image's `/usr/local/bin/python3` for itself. A task that runs on
+  `node1` before the venv exists, outside that play, fails because the
+  interpreter is missing. The controller image used to prove the same thing by
+  having no boto3, but `ansible-runtime` 0.4.0 adds boto3 to both its targets.
 - **boto3 doesn't read `AWS_REGION` in every version** (only
   `AWS_DEFAULT_REGION`). The plugin reads both itself through its `region`
   option's `env:` entries; don't remove them in favour of boto3's lookup.

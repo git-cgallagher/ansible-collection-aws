@@ -1,9 +1,13 @@
 ---
-# The module's only dependency goes on the node, not the controller: if the
-# module ran anywhere but node1, it couldn't import boto3.
+# boto3 goes into a venv that only node1 has, and node1's
+# ansible_python_interpreter (molecule.yml) points into it, so the module can't
+# start anywhere but node1, whatever the controller image contains. This play
+# builds that venv, so it runs on the image's own Python.
 - name: Prepare the node
   hosts: nodes
   gather_facts: false
+  vars:
+    ansible_python_interpreter: /usr/local/bin/python3
   tasks:
     # The driver doesn't wait for a container's service; moto takes a moment.
     - name: Wait for moto
@@ -12,11 +16,16 @@
         port: 5000
         timeout: 120
 
+    - name: Create the venv
+      ansible.builtin.command:
+        argv: [/usr/local/bin/python3, -m, venv, /opt/aws]
+        creates: /opt/aws/bin/python
+
     # The same floors as the collection's requirements.txt. pip directly:
     # ansible.builtin.pip needs the packaging library on the node, which the
     # slim image doesn't have.
-    - name: Install boto3
+    - name: Install boto3 into the venv
       ansible.builtin.command:
-        argv: [python3, -m, pip, install, --disable-pip-version-check, --root-user-action=ignore, boto3>=1.28.0, botocore>=1.31.0]
+        argv: [/opt/aws/bin/python, -m, pip, install, --disable-pip-version-check, boto3>=1.28.0, botocore>=1.31.0]
       register: aws_pip
       changed_when: "'Successfully installed' in aws_pip.stdout"

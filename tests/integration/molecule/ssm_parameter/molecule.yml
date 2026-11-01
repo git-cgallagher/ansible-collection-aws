@@ -4,7 +4,9 @@
 # against moto, a second container standing in for SSM and STS on a shared
 # Docker network. The module_ssm_parameter integration target runs the same
 # module through the local connection; here Ansible ships it to another host,
-# module_utils included, and boto3 exists only on that host.
+# module_utils included, and runs it on a Python only that host has: a venv
+# holding boto3 (prepare.yml), so it can't have run anywhere else, whatever
+# the controller image contains.
 #
 # Run it from tests/integration: `molecule test -s ssm_parameter` (AGENTS.md).
 # The platforms come from the molecule-git-cgallagher driver's docker kind.
@@ -37,6 +39,9 @@ provisioner:
   inventory:
     group_vars:
       nodes:
+        # The venv prepare.yml builds; prepare itself runs on the image's
+        # python3, since this doesn't exist until it has.
+        ansible_python_interpreter: /opt/aws/bin/python
         # The same accounts and roles as the module_ssm_parameter integration
         # target. moto gives an assumed role's credentials the role's account
         # and doesn't check trust policies, so the roles needn't exist.
