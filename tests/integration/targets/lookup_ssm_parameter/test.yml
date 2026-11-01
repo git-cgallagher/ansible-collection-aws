@@ -40,6 +40,27 @@
                    role_arn='arn:aws:iam::' ~ target_account ~ ':role/ParamReader',
                    external_id='ext-123', role_session_name='integration', **endpoints) == 'db.internal'
 
+    - name: Read through a hub role and then the target role (via_role_arns)
+      ansible.builtin.assert:
+        that:
+          - >-
+            lookup('git_cgallagher.aws.ssm_parameter', '/app/prod/db/host',
+                   via_role_arns=['arn:aws:iam::111111111111:role/Hub'], **cross) == 'db.internal'
+
+    - name: Reject a chained session longer than an hour
+      ansible.builtin.set_fact:
+        too_long: >-
+          {{ lookup('git_cgallagher.aws.ssm_parameter', '/app/prod/db/host',
+                    via_role_arns=['arn:aws:iam::111111111111:role/Hub'], duration_seconds=7200, **cross) }}
+      register: chain_duration
+      ignore_errors: true
+
+    - name: Check the chained duration error
+      ansible.builtin.assert:
+        that:
+          - chain_duration is failed
+          - "'cannot exceed 3600' in chain_duration.msg"
+
     - name: Return one value per term with query
       ansible.builtin.assert:
         that:

@@ -1,1 +1,2 @@
 plugins/lookup/ssm_parameter.py validate-modules:missing-gplv3-license # collection is MIT (GPLv3-compatible)
+plugins/modules/ssm_parameter.py validate-modules:missing-gplv3-license # collection is MIT (GPLv3-compatible)

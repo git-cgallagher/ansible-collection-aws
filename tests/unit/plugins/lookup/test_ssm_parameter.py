@@ -181,9 +181,74 @@ def test_assume_role_failure_is_reported(lookup):
     )
     fake_sts = MagicMock()
     fake_sts.assume_role.side_effect = err
-    with patch.object(plugin.LookupModule, "_make_client", return_value=fake_sts):
+    with patch.object(plugin.sts, "make_client", return_value=fake_sts):
         with pytest.raises(AnsibleLookupError, match="Failed to assume role arn:aws:iam::111111111111:role/ParamReader"):
             lookup.run(["/p"], {}, region=REGION, account=TARGET_ACCOUNT, role_name=ROLE)
+
+
+# ---- role chaining -------------------------------------------------------------
+
+HUB_ACCOUNT = "999999999999"
+HUB_ARN = "arn:aws:iam::%s:role/Hub" % HUB_ACCOUNT
+
+
+def _sts_spy(calls):
+    """Patch target for boto3's client factory that records every sts:AssumeRole RoleArn."""
+    real_client = boto3.session.Session.client
+
+    def spy_client(self, service, **kwargs):
+        client = real_client(self, service, **kwargs)
+        if service == "sts":
+            real_assume = client.assume_role
+
+            def assume_role(**params):
+                calls.append(params)
+                return real_assume(**params)
+
+            client.assume_role = assume_role
+        return client
+
+    return spy_client
+
+
+def test_via_role_arns_reads_through_hub(lookup):
+    _target_ssm().put_parameter(Name="/x/secret", Value="from-target", Type="SecureString")
+    calls = []
+    with patch.object(boto3.session.Session, "client", _sts_spy(calls)):
+        result = lookup.run(
+            ["/x/secret"], {}, region=REGION, via_role_arns=[HUB_ARN], account=TARGET_ACCOUNT, role_name=ROLE,
+            external_id="ext-123", duration_seconds=1800,
+        )
+    assert result == ["from-target"]
+    assert [c["RoleArn"] for c in calls] == [HUB_ARN, "arn:aws:iam::%s:role/%s" % (TARGET_ACCOUNT, ROLE)]
+    # Intermediate hop: one hour and no external ID. Final hop: the caller's duration and external ID.
+    assert calls[0]["DurationSeconds"] == 3600 and "ExternalId" not in calls[0]
+    assert calls[1]["DurationSeconds"] == 1800 and calls[1]["ExternalId"] == "ext-123"
+
+
+def test_hub_session_is_shared_between_spokes(lookup):
+    _target_ssm().put_parameter(Name="/p", Value="v", Type="String")
+    other = "333333333333"
+    calls = []
+    with patch.object(boto3.session.Session, "client", _sts_spy(calls)):
+        lookup.run(["/p"], {}, region=REGION, via_role_arns=[HUB_ARN], account=TARGET_ACCOUNT, role_name=ROLE)
+        lookup.run(["/p"], {}, region=REGION, via_role_arns=[HUB_ARN], account=TARGET_ACCOUNT, role_name=ROLE)
+        lookup.run(["/p"], {}, region=REGION, via_role_arns=[HUB_ARN], account=other, role_name=ROLE, on_missing="skip")
+    # hub once, target once, the other spoke once: three AssumeRole calls for three lookups through one hub.
+    assert [c["RoleArn"].split("::")[1].split(":")[0] for c in calls] == [HUB_ACCOUNT, TARGET_ACCOUNT, other]
+
+
+@pytest.mark.parametrize(
+    "kwargs, message",
+    [
+        ({"via_role_arns": [HUB_ARN]}, "needs a target role"),
+        ({"via_role_arns": ["nope"], "account": TARGET_ACCOUNT, "role_name": ROLE}, "does not look like"),
+        ({"via_role_arns": [HUB_ARN], "account": TARGET_ACCOUNT, "role_name": ROLE, "duration_seconds": 7200}, "cannot exceed 3600"),
+    ],
+)
+def test_invalid_chain_options(lookup, kwargs, message):
+    with pytest.raises(AnsibleLookupError, match=message):
+        lookup.run(["/p"], {}, region=REGION, **kwargs)
 
 
 # ---- partitions ----------------------------------------------------------------
